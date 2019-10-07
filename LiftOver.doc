@@ -1,0 +1,68 @@
+Documents the liftover pipeline to convert polymorhism coordinates from one genome to another.
+Can be done across species but is not really meant to do so.
+All programs are from the Kent tools library from UCSC; 600+ programs
+Loaded via: module load kent
+
+
+1. make directories: old new net lift chain over blat
+2. put old reference fasta in the "old" directory and the new reference fasta in the "new" directory
+3. make info files for old genome: go to old directory and run faToTwoBit on the old fasta; 
+	run twoBitInfo on the twobit file for the old ref to get chromosome sizes:
+	faToTwoBit oldref.fa oldref.2bit
+	twoBitInfo oldref.2bit oldref.chromsizes
+3. split new genome, make info files: go to new directory and split fasta into 3kb chunks and get needed info on the split file using:
+	faSplit -lift=new.lft size <new ref genome file name> -oneFile 3000 <naming convention of your choice for outfile> I use name.split.fa
+	faToTwoBit new.split.fa new.split.2bit
+
+	Also need a 2bit file and chrom sizes for the whole genome:
+	faToTwoBit newref.fa newref.2bit
+	twoBitInfo newref.2bit newref.chromsizes	
+
+4. blat: Time consuming step #1: run blat to align the old reference to the new one:
+	cd blat
+	blat ../old/oldref.2bit ../new/new.split.fa oldref.psl -tileSize=12 -minScore=100 -minIdentity=98 -fastMap
+	cd ..
+
+	This will take around a day for poplar. Time probably scales with genome sizes. Blat cannot be multithreaded.
+	Output file is oldref.psl; will be used downstream	
+
+5. liftup: Change the coordinates in the psl file output from 4. Current conversion coordinates are base on the split fasta file.
+	This will convert the coordinates those of the non-split (new) fasta reference. Via:
+	cd lift
+	
+	liftUp -pslQ  old2new.psl <path to new>/new.lft ../blat/oldref.psl 
+	### the .lft file was created in 3 when splitting the fasta file ###
+	cd ..
+
+6. chain: convert psl to chain via:
+	cd chain
+	axtChain -linearGap=medium -psl ../lift/old2new.psl ../old/oldref.2bit ../new/newref.2bit old2new.chain
+	
+	
+7. chainsort: sort your new chain file, might not be necessary:
+	chainSort old2new.chain old2new.chain.sorted
+	cd ..
+	
+8. chainnet: identify alignable regions from chain file:
+	cd net 
+	chainNet ../chain/old2new.chain.sorted ../old/oldref.chromsizes ../new/newref.chromsizes old2new.net /dev/null
+	cd ..	
+
+9. netchainsubset (makes liftover file): Make the file you've been doing all the hard work for:
+	liftOver net/old2new.net chain/old2new.chain.sorted old2new.liftover
+
+10. liftover snp file: steps assume one is using a vcf file to start. the conversion of coordinates only works on a 3 column 
+	bed file. Convert vcf to 3 column bed and convert coords via:
+	
+	ml load bedops
+	vcf2bed < snps.vcf > snps.bed
+	awk 'BEGIN {OFS="\t"}; {print $1"\t"$2"\t"$3}' snps.bed > snps_3col.bed
+	
+	ml load crossmap
+	CrossMap.py bed old2new.liftover snps_3col.bed > crossmap_lft.out
+
+11. convert coordinates in old bed file to new locations:
+	convert_coords.py -inbed <old bed file with all columns> -conversions <crossmap output file>
+	output file is "updated_coords.bed"
+
+
